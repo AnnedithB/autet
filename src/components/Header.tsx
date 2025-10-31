@@ -22,7 +22,9 @@ const Header = () => {
   return (
     <header ref={headerRef} className="border-b border-border bg-card/95 backdrop-blur-sm sticky top-0 z-50">
       <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-        <Link to="/" className="text-2xl font-bold text-primary">AuTest</Link>
+        <Link to="/" className="flex items-center">
+          <img src="/logo.png" alt="Logo" className="h-12 w-auto" />
+        </Link>
         <nav className="hidden md:flex items-center gap-6">
           <Link to="/" className={`hover:text-primary transition-colors ${isActive('/') ? 'text-primary' : 'text-foreground'}`}>Home</Link>
           <Link to="/about" className={`hover:text-primary transition-colors ${isActive('/about') ? 'text-primary' : 'text-foreground'}`}>About</Link>

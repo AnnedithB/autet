@@ -8,13 +8,13 @@ All colors MUST be HSL.
 
 @layer base {
   :root {
-    --background: 0 0% 5%;
+    --background: 204 36% 5%; /* #090f13 */
     --foreground: 0 0% 100%;
 
-    --card: 0 0% 8%;
+    --card: 204 36% 5%; /* #090f13 */
     --card-foreground: 0 0% 100%;
 
-    --popover: 0 0% 8%;
+    --popover: 204 36% 5%; /* #090f13 */
     --popover-foreground: 0 0% 100%;
 
     --primary: 174 100% 29%;
@@ -99,5 +99,158 @@ All colors MUST be HSL.
   * {
     scrollbar-width: thin;
     scrollbar-color: rgba(var(--primary-rgb), 0.22) transparent;
+  }
+}
+
+@layer utilities {
+  .animate-gradient-slow {
+    background-size: 200% 200%;
+    animation: gradient-slow 28s ease-in-out infinite;
+  }
+
+  .animate-orbit {
+    animation: orbit 36s linear infinite;
+  }
+
+  .animate-orbit-slow {
+    animation: orbit 54s linear infinite reverse;
+  }
+
+  .animate-twinkle {
+    animation: twinkle 18s ease-in-out infinite;
+  }
+
+  .animate-ping-once {
+    position: relative;
+  }
+
+  .animate-ping-once::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    animation: ping-once 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    background: rgba(var(--primary-rgb), 0.5);
+  }
+
+  .holo-card {
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.35s ease, box-shadow 0.35s ease;
+    box-shadow: 0 18px 40px -22px rgba(var(--primary-rgb), 0.35);
+  }
+
+ 
+
+
+
+ 
+  .holo-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 30px 60px -32px rgba(var(--secondary-rgb), 0.46);
+  }
+
+  .holo-card:hover::before {
+    animation: holo-scan-left 0.7s cubic-bezier(0.45, 0, 0.2, 1);
+  }
+
+  .holo-card:hover::after {
+    animation: holo-scan-right 0.7s cubic-bezier(0.45, 0, 0.2, 1);
+  }
+
+  .holo-card:focus-visible {
+    outline: 2px solid rgba(var(--primary-rgb), 0.75);
+    outline-offset: 4px;
+  }
+}
+
+@keyframes gradient-slow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes orbit {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.05);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes ping-once {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+@keyframes holo-scan-left {
+  0% {
+    transform: translate(-10%, -50%);
+    opacity: 0;
+  }
+  40% {
+    opacity: 1;
+  }
+  50% {
+    transform: translate(110%, -50%);
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translate(120%, -50%);
+    opacity: 0;
+  }
+}
+
+@keyframes holo-scan-right {
+  0% {
+    transform: translate(10%, -50%) scaleX(-1);
+    opacity: 0;
+  }
+  40% {
+    opacity: 1;
+  }
+  50% {
+    transform: translate(-110%, -50%) scaleX(-1);
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translate(-120%, -50%) scaleX(-1);
+    opacity: 0;
   }
 }

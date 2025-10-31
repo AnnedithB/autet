@@ -7,12 +7,24 @@ import { useAuth } from '@/contexts/AuthContext';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { gsap } from 'gsap';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+
+const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
 const Register = () => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [showSuccess, setShowSuccess] = useState(false);
   const { signUp, user } = useAuth();
   const navigate = useNavigate();
   const formRef = useRef<HTMLDivElement>(null);
@@ -37,19 +49,40 @@ const Register = () => {
     e.preventDefault();
     setError('');
 
-    if (!name || !email || !password) {
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim();
+
+    if (!trimmedName || !trimmedEmail || !password) {
       setError('Please fill in all fields');
       return;
     }
 
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (trimmedName.length < 2) {
+      setError('Name must be at least 2 characters');
+      return;
+    }
+
+    if (!isValidEmail(trimmedEmail)) {
+      setError('Please enter a valid email address');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+
+    if (!/\d/.test(password)) {
+      setError('Password must include at least one number');
       return;
     }
 
     try {
-      await signUp(email, password);
-      navigate('/dashboard');
+      await signUp(trimmedEmail, password);
+      setName('');
+      setEmail('');
+      setPassword('');
+      setShowSuccess(true);
     } catch (err: any) {
       if (err.code === 'auth/email-already-in-use') {
         setError('An account with this email already exists');
@@ -109,7 +142,7 @@ const Register = () => {
                   onChange={(e) => setPassword(e.target.value)}
                   className="bg-input border-border"
                 />
-                <p className="text-xs text-muted-foreground">Minimum 6 characters</p>
+                <p className="text-xs text-muted-foreground">Minimum 8 characters and include a number</p>
               </div>
 
               <Button type="submit" className="w-full bg-primary text-primary-foreground hover:bg-secondary rounded-md">
@@ -127,6 +160,27 @@ const Register = () => {
         </div>
       </main>
       <Footer />
+      <AlertDialog
+        open={showSuccess}
+        onOpenChange={(open) => {
+          setShowSuccess(open);
+          if (!open) {
+            navigate('/login');
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Registration Successful</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your account has been created. Continue to the login page to access your dashboard.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction>Go to login</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
