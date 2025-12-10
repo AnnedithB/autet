@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { Sparkles, Database, Shield, Zap, UploadCloud } from 'lucide-react';
+import DOMPurify from "dompurify";
 
 const Dashboard = () => {
   const [appId, setAppId] = useState('');
@@ -183,7 +184,10 @@ const Dashboard = () => {
                     type="text"
                     placeholder="com.example.app"
                     value={appId}
-                    onChange={(e) => setAppId(e.target.value)}
+                    onChange={(e) => {
+                      const sanitized = DOMPurify.sanitize(e.target.value);   //passes value to dom purify , checks if values in whitelist
+                      setAppId(sanitized);                                    //not in whitelist = js / tags etc
+                    }}
                     className="bg-input border-border"
                     disabled={isScraping}
                   />
