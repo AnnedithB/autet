@@ -1,15 +1,35 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Slider } from '@/components/ui/slider';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
-import { Sparkles, Database, Shield, Zap, UploadCloud } from 'lucide-react';
+import { Sparkles, Database, Zap, UploadCloud, Brain, TestTube, Settings, Check, ChevronRight, Navigation } from 'lucide-react';
+import DOMPurify from "dompurify";
+
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+const STEPS = [
+  { id: 1, label: 'App ID' },
+  { id: 2, label: 'Scrape' },
+  { id: 3, label: 'Classify' },
+  { id: 4, label: 'Test Cases' },
+  { id: 5, label: 'Settings & APK' },
+];
 
 const Dashboard = () => {
+  const [currentStep, setCurrentStep] = useState(1);
   const [appId, setAppId] = useState('');
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState('');
+  const [scrapeCount, setScrapeCount] = useState(0);
+  const [scrapeProgressStatus, setScrapeProgressStatus] = useState<'idle' | 'running' | 'completed' | 'stopped'>('idle');
+  const [scrapeFromStart, setScrapeFromStart] = useState(false); // false = resume from checkpoint, true = start from beginning
+  const [isStopping, setIsStopping] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [selectedApk, setSelectedApk] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [apkStatus, setApkStatus] = useState('');
@@ -17,14 +37,83 @@ const Dashboard = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragActive, setIsDragActive] = useState(false);
   const uploadTimeoutRef = useRef<number | null>(null);
+  const [isStartingNavigation, setIsStartingNavigation] = useState(false);
+  const [navigationStatus, setNavigationStatus] = useState('');
+  const [startEmulatorWithNavigation, setStartEmulatorWithNavigation] = useState(true);
+
+  const [useCustomThreshold, setUseCustomThreshold] = useState(false);
+  const [threshold, setThreshold] = useState([0.5]);
+  const [isClassifying, setIsClassifying] = useState(false);
+  const [classificationStatus, setClassificationStatus] = useState('');
+  const [classificationStats, setClassificationStats] = useState<any>(null);
+  const [classifyFromStart, setClassifyFromStart] = useState(false);
+
+  const [isGeneratingTestCases, setIsGeneratingTestCases] = useState(false);
+  const [testCaseStatus, setTestCaseStatus] = useState('');
+  const [testCaseStats, setTestCaseStats] = useState<any>(null);
+  const [batchSize, setBatchSize] = useState(10);
+  const [displayCount, setDisplayCount] = useState(0);
+  const displayCountRef = useRef(0);
 
   useEffect(() => {
     return () => {
-      if (uploadTimeoutRef.current) {
-        window.clearTimeout(uploadTimeoutRef.current);
-      }
+      if (uploadTimeoutRef.current) window.clearTimeout(uploadTimeoutRef.current);
+      if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
+
+  const fetchScrapeProgress = useCallback(async () => {
+    if (!appId.trim()) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/scrape/progress?appId=${encodeURIComponent(appId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setScrapeCount(data.count ?? 0);
+        const status = (data.status ?? 'idle') as 'idle' | 'running' | 'completed' | 'stopped';
+        setScrapeProgressStatus((prev) => {
+          if (status === 'idle' && prev === 'running') return prev;
+          return status;
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }, [appId]);
+
+  useEffect(() => {
+    if (currentStep !== 2 || !appId.trim() || scrapeProgressStatus !== 'running') return;
+    fetchScrapeProgress();
+    pollRef.current = setInterval(fetchScrapeProgress, 1500);
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [currentStep, appId, scrapeProgressStatus, fetchScrapeProgress]);
+
+  useEffect(() => {
+    if (scrapeCount <= displayCountRef.current) {
+      displayCountRef.current = scrapeCount;
+      setDisplayCount(scrapeCount);
+      return;
+    }
+    const target = scrapeCount;
+    const start = displayCountRef.current;
+    const duration = 400;
+    const startTime = performance.now();
+    const tick = (now: number) => {
+      const elapsed = now - startTime;
+      const t = Math.min(elapsed / duration, 1);
+      const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const value = Math.round(start + (target - start) * eased);
+      displayCountRef.current = value;
+      setDisplayCount(value);
+      if (t < 1) requestAnimationFrame(tick);
+    };
+    const id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, [scrapeCount]);
 
   const getNoticeClasses = (message: string) => {
     const normalized = message.toLowerCase();
@@ -92,45 +181,186 @@ const Dashboard = () => {
     }, 1500);
   };
 
+  const handleStartNavigation = async () => {
+    setIsStartingNavigation(true);
+    setNavigationStatus('');
+    try {
+      const url = `${API_BASE}/api/appium/start-navigation?startEmulator=${startEmulatorWithNavigation}`;
+      const res = await fetch(url, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && (res.status === 202 || data.status === 'started')) {
+        setNavigationStatus(data.message || 'Appium navigation started. Check backend/appium_navigation_log.txt for output.');
+      } else {
+        setNavigationStatus(data.error || `Error: ${res.status}`);
+      }
+    } catch (err) {
+      setNavigationStatus(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsStartingNavigation(false);
+    }
+  };
+
   const handleScrape = async () => {
     if (!appId.trim()) {
       setScrapeStatus('Please enter an App ID');
       return;
     }
-
-    if (!apkUploaded) {
-      setScrapeStatus('Please upload your APK before scraping reviews');
-      return;
-    }
     setIsScraping(true);
-    setScrapeStatus('Submitting...');
-
+    setScrapeStatus('');
     try {
-      // Send request to backend endpoint with the entered App ID
-      const url = `/api/submit-appId/${encodeURIComponent(appId)}`;
+      const baseUrl = `${API_BASE || window.location.origin}/api/submit-appId/${encodeURIComponent(appId)}`;
+      const url = scrapeFromStart ? `${baseUrl}?fromStart=true` : baseUrl;
+      console.log('[Scrape] POST', url, scrapeFromStart ? '(from start)' : '(from checkpoint)');
       const res = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        // body is optional since appId is in the URL
-        body: JSON.stringify({ appId })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appId }),
       });
-
       if (!res.ok) {
         const text = await res.text();
         setScrapeStatus(`Error: ${res.status} ${text}`);
       } else {
-        // backend accepted the request
-        setScrapeStatus('Submitted successfully. Processing started.');
+        setScrapeStatus('Scraping started. Count updates in real time.');
+        setScrapeProgressStatus('running');
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setScrapeStatus(`Network error: ${msg}`);
+      setScrapeStatus(`Network error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsScraping(false);
     }
   };
+
+  const handleStopAndProceed = async () => {
+    if (!appId.trim()) return;
+    setIsStopping(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/scrape/stop?appId=${encodeURIComponent(appId)}`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setScrapeCount(data.reviewsScraped ?? scrapeCount);
+        setScrapeProgressStatus('stopped');
+        setScrapeStatus(data.message || `Stopped. ${data.reviewsScraped ?? 0} reviews. Classification started in background.`);
+        setCurrentStep(3);
+        fetchStats(); // refresh classification stats when landing on Classify step
+      } else {
+        setScrapeStatus('Failed to stop scraper.');
+      }
+    } catch (err) {
+      setScrapeStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
+  const canProceedFromScrape = scrapeProgressStatus === 'completed' || scrapeProgressStatus === 'stopped';
+
+  const handleClassifyReviews = async () => {
+    if (!appId.trim()) {
+      setClassificationStatus('Please enter an App ID');
+      return;
+    }
+    
+    setIsClassifying(true);
+    setClassificationStatus('Classifying reviews...');
+    
+    try {
+      const selectedThreshold = useCustomThreshold ? threshold[0] : undefined;
+      const url = `${API_BASE}/api/classification/classify-reviews?appId=${encodeURIComponent(appId)}${selectedThreshold !== undefined ? `&threshold=${selectedThreshold}` : ''}${classifyFromStart ? '&fromStart=true' : ''}`;
+      
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ detail: 'Unknown error' }));
+        const msg = [errorData.detail, errorData.error].filter(Boolean).join(' — ') || res.statusText;
+        console.error('[Classification]', res.status, errorData);
+        setClassificationStatus(`Error: ${msg}`);
+      } else {
+        const data = await res.json();
+        setClassificationStats(data);
+        setClassificationStatus(`Success! Processed ${data.processed} reviews.`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setClassificationStatus(`Network error: ${msg}`);
+    } finally {
+      setIsClassifying(false);
+    }
+  };
+
+  const handleGenerateTestCases = async () => {
+    if (!appId.trim()) {
+      setTestCaseStatus('Please enter an App ID');
+      return;
+    }
+    
+    setIsGeneratingTestCases(true);
+    setTestCaseStatus('Generating test cases...');
+    
+    try {
+      const url = `${API_BASE}/api/test-cases/generate-batch?appId=${encodeURIComponent(appId)}&batch_size=${batchSize}`;
+      
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ detail: 'Unknown error' }));
+        setTestCaseStatus(`Error: ${errorData.detail || res.statusText}`);
+      } else {
+        const data = await res.json();
+        setTestCaseStats(data);
+        setTestCaseStatus(`Success! Generated ${data.processed} test cases.`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTestCaseStatus(`Network error: ${msg}`);
+    } finally {
+      setIsGeneratingTestCases(false);
+    }
+  };
+
+  const fetchStats = async () => {
+    if (!appId.trim()) return;
+    try {
+      const [classifyRes, testCaseRes] = await Promise.all([
+        fetch(`${API_BASE}/api/classification/stats?appId=${encodeURIComponent(appId)}`),
+        fetch(`${API_BASE}/api/test-cases/stats?appId=${encodeURIComponent(appId)}`),
+      ]);
+      if (classifyRes.ok) {
+        const data = await classifyRes.json();
+        setClassificationStats(data);
+      }
+      if (testCaseRes.ok) {
+        const data = await testCaseRes.json();
+        setTestCaseStats(data);
+      }
+    } catch (err) {
+      console.error('Error fetching stats:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (!appId.trim()) return;
+    const t = setTimeout(fetchStats, 400);
+    return () => clearTimeout(t);
+  }, [appId]);
+
+  // When entering Classify step, refresh stats so user sees count (and background classification result)
+  useEffect(() => {
+    if (currentStep === 3 && appId.trim()) {
+      fetchStats();
+      const interval = setInterval(fetchStats, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [currentStep, appId]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -147,35 +377,61 @@ const Dashboard = () => {
             {/* Quick Stats */}
             <div className="bg-card border border-border p-6 holo-card">
               <Sparkles className="text-primary mb-3" size={24} />
-              <h3 className="text-2xl font-bold mb-1">0</h3>
-              <p className="text-sm text-muted-foreground">Reviews Scraped</p>
+              <h3 className="text-2xl font-bold mb-1">{classificationStats?.total_classified || 0}</h3>
+              <p className="text-sm text-muted-foreground">Reviews Classified</p>
             </div>
             <div className="bg-card border border-border p-6 holo-card">
-              <Database className="text-secondary mb-3" size={24} />
-              <h3 className="text-2xl font-bold mb-1">0</h3>
+              <TestTube className="text-secondary mb-3" size={24} />
+              <h3 className="text-2xl font-bold mb-1">{testCaseStats?.total_test_cases || 0}</h3>
+              <p className="text-sm text-muted-foreground">Test Cases Generated</p>
+            </div>
+            <div className="bg-card border border-border p-6 holo-card">
+              <Database className="text-accent mb-3" size={24} />
+              <h3 className="text-2xl font-bold mb-1">{appId ? '1' : '0'}</h3>
               <p className="text-sm text-muted-foreground">Apps Tracked</p>
             </div>
             <div className="bg-card border border-border p-6 holo-card">
-              <Shield className="text-accent mb-3" size={24} />
-              <h3 className="text-2xl font-bold mb-1">Active</h3>
-              <p className="text-sm text-muted-foreground">Account Status</p>
-            </div>
-            <div className="bg-card border border-border p-6 holo-card">
               <Zap className="text-primary mb-3" size={24} />
-              <h3 className="text-2xl font-bold mb-1">Ready</h3>
-              <p className="text-sm text-muted-foreground">System Status</p>
+              <h3 className="text-2xl font-bold mb-1">
+                {testCaseStats?.coverage_percentage ? `${testCaseStats.coverage_percentage}%` : '0%'}
+              </h3>
+              <p className="text-sm text-muted-foreground">Test Coverage</p>
             </div>
           </div>
 
-          <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-            {/* Scrape Reviews Section */}
-            <div className="bg-card border border-border p-8 holo-card">
-              <h2 className="text-2xl font-bold mb-2">Scrape Reviews</h2>
-              <p className="text-muted-foreground mb-6">
-                Enter an App ID to start scraping and analyzing reviews
-              </p>
+          {/* Stepper */}
+          <div className="mb-8 flex flex-wrap items-center gap-2">
+            {STEPS.map((step, i) => (
+              <span key={step.id} className="flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium transition-colors ${
+                    currentStep > step.id
+                      ? 'bg-primary text-primary-foreground'
+                      : currentStep === step.id
+                        ? 'bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-background'
+                        : 'bg-muted text-muted-foreground'
+                  }`}
+                >
+                  {currentStep > step.id ? <Check size={16} /> : step.id}
+                </span>
+                <span className={currentStep === step.id ? 'font-medium text-foreground' : 'text-muted-foreground'}>
+                  {step.label}
+                </span>
+                {i < STEPS.length - 1 && <ChevronRight className="text-muted-foreground" size={16} />}
+              </span>
+            ))}
+          </div>
 
-              <div className="space-y-4">
+          {/* Step 1: App ID */}
+          {currentStep === 1 && (
+            <Card className="max-w-lg">
+              <CardHeader>
+                <CardTitle>Enter App ID</CardTitle>
+                <CardDescription>
+                  Enter the Google Play Store App ID to scrape reviews (e.g. com.example.app).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="appId">App ID</Label>
                   <Input
@@ -183,114 +439,413 @@ const Dashboard = () => {
                     type="text"
                     placeholder="com.example.app"
                     value={appId}
-                    onChange={(e) => setAppId(e.target.value)}
+                    onChange={(e) => setAppId(DOMPurify.sanitize(e.target.value))}
                     className="bg-input border-border"
-                    disabled={isScraping}
                   />
                 </div>
-
                 <Button
-                  onClick={handleScrape}
-                  disabled={isScraping}
-                  className="bg-primary text-primary-foreground hover:bg-secondary"
+                  onClick={() => setCurrentStep(2)}
+                  disabled={!appId.trim()}
+                  className="w-full bg-primary text-primary-foreground hover:bg-secondary"
                 >
-                  {isScraping ? 'Scraping...' : 'Start Scraping'}
+                  Next: Scrape reviews
                 </Button>
+              </CardContent>
+            </Card>
+          )}
 
+          {/* Step 2: Scrape with live counter */}
+          {currentStep === 2 && (
+            <Card className="max-w-2xl">
+              <CardHeader>
+                <CardTitle>Scrape reviews</CardTitle>
+                <CardDescription>
+                  Reviews are fetched from the Play Store. You can stop anytime and proceed with what was scraped.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <p className="text-sm text-muted-foreground">App ID: <strong>{appId}</strong></p>
+                {scrapeProgressStatus === 'idle' && (
+                  <>
+                    <div className="space-y-3">
+                      <Label className="text-sm font-medium">Scrape mode</Label>
+                      <div className="flex gap-6">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="scrapeMode"
+                            checked={!scrapeFromStart}
+                            onChange={() => setScrapeFromStart(false)}
+                            className="rounded-full"
+                          />
+                          <span className="text-sm">Resume from checkpoint</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="scrapeMode"
+                            checked={scrapeFromStart}
+                            onChange={() => setScrapeFromStart(true)}
+                            className="rounded-full"
+                          />
+                          <span className="text-sm">Start from beginning</span>
+                        </label>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {scrapeFromStart ? 'Ignore saved progress and fetch from page 0.' : 'Continue from last saved position (if any).'}
+                      </p>
+                    </div>
+                    <Button
+                      onClick={handleScrape}
+                      disabled={isScraping || !appId.trim()}
+                      className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                    >
+                      {isScraping ? 'Starting...' : 'Start scraping'}
+                    </Button>
+                  </>
+                )}
+                {(scrapeProgressStatus === 'running' || scrapeProgressStatus === 'completed' || scrapeProgressStatus === 'stopped') && (
+                  <>
+                    <div className="flex flex-col items-center py-8">
+                      <span className="text-sm text-muted-foreground mb-2">Reviews scraped</span>
+                      <span className={`text-5xl font-bold tabular-nums text-primary transition-all duration-300 ease-out ${scrapeProgressStatus === 'running' ? 'animate-pulse' : ''}`}>
+                        {displayCount.toLocaleString()}
+                      </span>
+                      <span className="mt-2 text-sm text-muted-foreground">
+                        {scrapeProgressStatus === 'running' && 'Scraping...'}
+                        {scrapeProgressStatus === 'completed' && 'Complete'}
+                        {scrapeProgressStatus === 'stopped' && 'Stopped'}
+                      </span>
+                    </div>
+                    {scrapeProgressStatus === 'running' && (
+                      <Button
+                        variant="destructive"
+                        onClick={handleStopAndProceed}
+                        disabled={isStopping}
+                        className="w-full"
+                      >
+                        {isStopping ? 'Stopping...' : 'Stop & proceed to Classify'}
+                      </Button>
+                    )}
+                    {canProceedFromScrape && (
+                      <Button
+                        onClick={() => setCurrentStep(3)}
+                        className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                      >
+                        Proceed to Classify
+                      </Button>
+                    )}
+                  </>
+                )}
                 {scrapeStatus && (
                   <div className={`p-4 border rounded ${getNoticeClasses(scrapeStatus)}`}>
                     {scrapeStatus}
                   </div>
                 )}
-              </div>
-            </div>
+              </CardContent>
+            </Card>
+          )}
 
-            {/* Upload APK Section */}
-            <div className="bg-card flex flex-col items-center justify-center holo-card">
-              
-
-              <div
-                className={`p-2 flex flex-1 w-[100%] flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all duration-200 ${
-                  isDragActive ? 'border-primary bg-primary/5' : 'border-border/60 bg-card/60'
-                }`}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  setIsDragActive(true);
-                }}
-                onDragEnter={(event) => {
-                  event.preventDefault();
-                  setIsDragActive(true);
-                }}
-                onDragLeave={(event) => {
-                  event.preventDefault();
-                  setIsDragActive(false);
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setIsDragActive(false);
-                  const file = event.dataTransfer.files?.[0] ?? null;
-                  handleFileSelection(file);
-                }}
-                onClick={() => fileInputRef.current?.click()}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    fileInputRef.current?.click();
-                  }
-                }}
-              >
-                <UploadCloud className="text-muted-foreground" size={56} />
-                <p className="mt-4 text-lg font-semibold">Upload APK</p>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Drag and drop your file here, or <span className="text-primary">click to select</span>.
-                </p>
-                <p className="mt-4 text-xs text-muted-foreground">Supported format: .apk</p>
-                {isUploading && selectedApk && (
-                  <div className="mt-6 flex items-center gap-2 text-sm text-primary">
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                    Uploading {selectedApk.name}...
+          {/* Step 3: Classify */}
+          {currentStep === 3 && (
+            <Card className="max-w-2xl">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Brain className="text-primary" size={24} />
+                  Review Classification
+                </CardTitle>
+                <CardDescription>
+                  Classify reviews using sentiment analysis and zero-shot classification
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="space-y-2">
+                  <Label>App ID</Label>
+                  <Input
+                    value={appId}
+                    onChange={(e) => setAppId(DOMPurify.sanitize(e.target.value))}
+                    className="bg-input border-border"
+                    disabled={isClassifying}
+                  />
+                </div>
+                <div className="space-y-3">
+                  <Label className="text-sm font-medium">Classification mode</Label>
+                  <div className="flex gap-6">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="classifyMode"
+                        checked={!classifyFromStart}
+                        onChange={() => setClassifyFromStart(false)}
+                        className="rounded-full"
+                      />
+                      <span className="text-sm">Resume (skip already classified)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="classifyMode"
+                        checked={classifyFromStart}
+                        onChange={() => setClassifyFromStart(true)}
+                        className="rounded-full"
+                      />
+                      <span className="text-sm">From beginning (re-classify all)</span>
+                    </label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {classifyFromStart ? 'Clear existing classifications for this app and run on all reviews again.' : 'Only classify reviews not yet in the database.'}
+                  </p>
+                </div>
+                <div className="space-y-4 p-4 border rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="custom-threshold">Use Custom Threshold</Label>
+                      <p className="text-sm text-muted-foreground">Higher threshold = more strict (default: 0.5)</p>
+                    </div>
+                    <Switch id="custom-threshold" checked={useCustomThreshold} onCheckedChange={setUseCustomThreshold} />
+                  </div>
+                  {useCustomThreshold && (
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center justify-between">
+                        <Label>Threshold: {threshold[0].toFixed(2)}</Label>
+                        <span className="text-sm text-muted-foreground">
+                          {threshold[0] < 0.2 ? 'Very Loose' : threshold[0] < 0.4 ? 'Moderate' : threshold[0] < 0.6 ? 'Strict' : 'Very Strict'}
+                        </span>
+                      </div>
+                      <Slider value={threshold} onValueChange={setThreshold} min={0} max={1} step={0.01} className="w-full" />
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>0.0 (Loose)</span>
+                        <span>0.5</span>
+                        <span>1.0 (Strict)</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <Button
+                  onClick={handleClassifyReviews}
+                  disabled={isClassifying || !appId.trim()}
+                  className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                >
+                  {isClassifying ? 'Classifying...' : 'Classify Reviews'}
+                </Button>
+                {classificationStatus && (
+                  <div className={`p-4 border rounded ${getNoticeClasses(classificationStatus)}`}>
+                    {classificationStatus}
+                    {isClassifying && (
+                      <p className="text-sm text-muted-foreground mt-2">
+                        To see live progress, open <code className="bg-muted px-1 rounded">backend/classification_log.txt</code> (updates every 10 reviews).
+                      </p>
+                    )}
                   </div>
                 )}
-                {!isUploading && selectedApk && (
-                  <p className="mt-6 text-sm font-medium text-primary">Ready: {selectedApk.name}</p>
+                {classificationStats && (
+                  <div className="p-4 border rounded bg-muted/50">
+                    <h4 className="font-semibold mb-2">Classification Statistics</h4>
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div>Total Classified: <strong>{classificationStats.total_classified || 0}</strong></div>
+                      {classificationStats.processed !== undefined && <div>Processed: <strong>{classificationStats.processed}</strong></div>}
+                      {classificationStats.skipped !== undefined && <div>Skipped: <strong>{classificationStats.skipped}</strong></div>}
+                      {classificationStats.errors !== undefined && <div>Errors: <strong>{classificationStats.errors}</strong></div>}
+                    </div>
+                  </div>
                 )}
-                <input
-                  id="apkUpload"
-                  type="file"
-                  accept=".apk"
-                  ref={fileInputRef}
-                  className="hidden"
-                  onChange={(event) => handleFileSelection(event.target.files?.[0] ?? null)}
-                />
-              </div>
+                <Button onClick={() => setCurrentStep(4)} className="w-full" variant="outline">
+                  Next: Generate test cases
+                </Button>
+              </CardContent>
+            </Card>
+          )}
 
-              
-
-              {apkStatus && (
-                <div className={`mt-4 p-4 border rounded ${getNoticeClasses(apkStatus)}`}>
-                  {apkStatus}
+          {/* Step 4: Test cases */}
+          {currentStep === 4 && (
+            <Card className="max-w-2xl">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <TestTube className="text-primary" size={24} />
+                  Test Case Generation
+                </CardTitle>
+                <CardDescription>
+                  Generate test cases in Given-When-Then format from classified reviews
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="space-y-2">
+                  <Label>App ID</Label>
+                  <Input value={appId} onChange={(e) => setAppId(DOMPurify.sanitize(e.target.value))} className="bg-input border-border" disabled={isGeneratingTestCases} />
                 </div>
-              )}
-            </div>
-          </div>
+                <div className="space-y-2">
+                  <Label htmlFor="batchSize">Batch Size</Label>
+                  <Input
+                    id="batchSize"
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={batchSize}
+                    onChange={(e) => setBatchSize(parseInt(e.target.value) || 10)}
+                    className="bg-input border-border"
+                    disabled={isGeneratingTestCases}
+                  />
+                  <p className="text-sm text-muted-foreground">Number of reviews to process at once (1-50)</p>
+                </div>
+                <Button
+                  onClick={handleGenerateTestCases}
+                  disabled={isGeneratingTestCases || !appId.trim()}
+                  className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                >
+                  {isGeneratingTestCases ? 'Generating...' : 'Generate Test Cases'}
+                </Button>
+                {testCaseStatus && (
+                  <div className={`p-4 border rounded ${getNoticeClasses(testCaseStatus)}`}>
+                    {testCaseStatus}
+                  </div>
+                )}
+                {testCaseStats && (
+                  <div className="p-4 border rounded bg-muted/50">
+                    <h4 className="font-semibold mb-2">Test Case Statistics</h4>
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div>Total Test Cases: <strong>{testCaseStats.total_test_cases || 0}</strong></div>
+                      <div>Coverage: <strong>{testCaseStats.coverage_percentage || 0}%</strong></div>
+                      {testCaseStats.processed !== undefined && <div>Processed: <strong>{testCaseStats.processed}</strong></div>}
+                      {testCaseStats.failed !== undefined && <div>Failed: <strong>{testCaseStats.failed}</strong></div>}
+                    </div>
+                  </div>
+                )}
+                <Button onClick={() => setCurrentStep(5)} className="w-full" variant="outline">
+                  Next: Settings & APK
+                </Button>
+              </CardContent>
+            </Card>
+          )}
 
-          {/* Navigation Links */}
-          <div className="mt-8 grid md:grid-cols-3 gap-6">
-            <div className="bg-card border border-border p-6 transition-colors cursor-pointer holo-card">
-              <h3 className="font-semibold mb-2">Overview</h3>
-              <p className="text-sm text-muted-foreground">View your analytics dashboard</p>
+          {/* Step 5: Settings & APK */}
+          {currentStep === 5 && (
+            <div className="grid gap-6 max-w-2xl">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Settings className="text-primary" size={24} />
+                    Settings
+                  </CardTitle>
+                  <CardDescription>
+                    Configure classification and test case generation settings
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Default Threshold: 0.5</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Override in the Classify step. 0.4–0.6 is recommended.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Threshold Guide</Label>
+                    <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+                      <li><strong>0.0 - 0.2:</strong> Very loose</li>
+                      <li><strong>0.2 - 0.4:</strong> Moderate</li>
+                      <li><strong>0.4 - 0.6:</strong> Strict (default 0.5)</li>
+                      <li><strong>0.6 - 1.0:</strong> Very strict</li>
+                    </ul>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <UploadCloud className="text-primary" size={24} />
+                    Upload APK (Optional)
+                  </CardTitle>
+                  <CardDescription>
+                    APK upload for Appium testing. You can scrape and classify with just the App ID.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div
+                    className={`p-6 flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all ${
+                      isDragActive ? 'border-primary bg-primary/5' : 'border-border/60 bg-card/60'
+                    }`}
+                    onDragOver={(e) => { e.preventDefault(); setIsDragActive(true); }}
+                    onDragEnter={(e) => { e.preventDefault(); setIsDragActive(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); setIsDragActive(false); }}
+                    onDrop={(e) => { e.preventDefault(); setIsDragActive(false); handleFileSelection(e.dataTransfer.files?.[0] ?? null); }}
+                    onClick={() => fileInputRef.current?.click()}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current?.click(); } }}
+                  >
+                    <UploadCloud className="text-muted-foreground" size={48} />
+                    <p className="mt-4 font-semibold">Upload APK</p>
+                    <p className="mt-2 text-sm text-muted-foreground">Drag and drop or click to select</p>
+                    {isUploading && selectedApk && (
+                      <div className="mt-4 flex items-center gap-2 text-sm text-primary">
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                        Uploading {selectedApk.name}...
+                      </div>
+                    )}
+                    {!isUploading && selectedApk && <p className="mt-4 text-sm text-primary">Ready: {selectedApk.name}</p>}
+                    <input
+                      type="file"
+                      accept=".apk"
+                      ref={fileInputRef}
+                      className="hidden"
+                      onChange={(e) => handleFileSelection(e.target.files?.[0] ?? null)}
+                    />
+                  </div>
+                  {apkStatus && (
+                    <div className={`mt-4 p-4 border rounded ${getNoticeClasses(apkStatus)}`}>
+                      {apkStatus}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Navigation className="text-primary" size={24} />
+                    Start navigating
+                  </CardTitle>
+                  <CardDescription>
+                    Run the Appium UI crawler to build the navigation graph. With emulator on, you can watch the crawler in the emulator window.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between rounded-lg border p-4">
+                    <div className="space-y-0.5">
+                      <Label className="text-base">Start emulator</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Launch an Android emulator so you can see where the crawler is visiting in real time.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={startEmulatorWithNavigation}
+                      onCheckedChange={setStartEmulatorWithNavigation}
+                    />
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Ensure Appium server is running on port 4723. You need Android Studio and at least one AVD (ANDROID_HOME set).
+                  </p>
+                  <Button
+                    onClick={handleStartNavigation}
+                    disabled={isStartingNavigation}
+                    className="w-full sm:w-auto"
+                  >
+                    {isStartingNavigation ? (
+                      <>
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent mr-2 inline-block" />
+                        Starting…
+                      </>
+                    ) : (
+                      'Start navigating'
+                    )}
+                  </Button>
+                  {navigationStatus && (
+                    <div className={`mt-4 p-4 border rounded ${getNoticeClasses(navigationStatus)}`}>
+                      {navigationStatus}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </div>
-            <div className="bg-card border border-border p-6 transition-colors cursor-pointer holo-card">
-              <h3 className="font-semibold mb-2">Settings</h3>
-              <p className="text-sm text-muted-foreground">Manage your account preferences</p>
-            </div>
-            <div className="bg-card border border-border p-6 transition-colors cursor-pointer holo-card">
-              <h3 className="font-semibold mb-2">History</h3>
-              <p className="text-sm text-muted-foreground">View past scraping results</p>
-            </div>
-          </div>
+          )}
         </div>
       </main>
       <Footer />
