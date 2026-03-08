@@ -54,6 +54,8 @@ const Dashboard = () => {
   const [testCaseStatus, setTestCaseStatus] = useState('');
   const [testCaseStats, setTestCaseStats] = useState<any>(null);
   const [batchSize, setBatchSize] = useState(10);
+  const [testCaseRemaining, setTestCaseRemaining] = useState<number | null>(null);
+  const [testCaseRunningTotal, setTestCaseRunningTotal] = useState(0);
   const [displayCount, setDisplayCount] = useState(0);
   const displayCountRef = useRef(0);
 
@@ -207,6 +209,7 @@ const Dashboard = () => {
     try {
       let url = `${API_BASE}/api/appium/start-navigation?startEmulator=${startEmulatorWithNavigation}`;
       if (uploadedApkPath) url += `&apkPath=${encodeURIComponent(uploadedApkPath)}`;
+      if (appId.trim()) url += `&appId=${encodeURIComponent(appId.trim())}`;
       const res = await fetch(url, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (res.ok && (res.status === 202 || data.status === 'started')) {
@@ -338,7 +341,7 @@ const Dashboard = () => {
     }
     
     setIsGeneratingTestCases(true);
-    setTestCaseStatus('Generating test cases...');
+    setTestCaseStatus(`Generating test cases (batch of ${batchSize})...`);
     
     try {
       const url = `${API_BASE}/api/test-cases/generate-batch?appId=${encodeURIComponent(appId)}&batch_size=${batchSize}`;
@@ -356,7 +359,15 @@ const Dashboard = () => {
       } else {
         const data = await res.json();
         setTestCaseStats(data);
-        setTestCaseStatus(`Success! Generated ${data.processed} test cases.`);
+        const batchProcessed = data.processed ?? 0;
+        setTestCaseRunningTotal(prev => prev + batchProcessed);
+        const remaining = data.remaining ?? 0;
+        setTestCaseRemaining(remaining);
+        if (remaining > 0) {
+          setTestCaseStatus(`Generated ${batchProcessed} test cases. ${remaining} remaining.`);
+        } else {
+          setTestCaseStatus(`Complete! All classified reviews have test cases.`);
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -392,9 +403,9 @@ const Dashboard = () => {
     return () => clearTimeout(t);
   }, [appId]);
 
-  // When entering Classify step, refresh stats so user sees count (and background classification result)
+  // When entering Classify or Test Cases step, refresh stats so user sees counts
   useEffect(() => {
-    if (currentStep === 3 && appId.trim()) {
+    if ((currentStep === 3 || currentStep === 4) && appId.trim()) {
       fetchStats();
       const interval = setInterval(fetchStats, 3000);
       return () => clearInterval(interval);
@@ -745,7 +756,10 @@ const Dashboard = () => {
                   <Label>App ID</Label>
                   <Input value={appId} onChange={(e) => setAppId(DOMPurify.sanitize(e.target.value))} className="bg-input border-border" disabled={isGeneratingTestCases} />
                 </div>
-                <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Classified reviews without test cases will be processed. Already-generated test cases are skipped.
+                </p>
+                <div className="space-y-2 p-4 border rounded-lg">
                   <Label htmlFor="batchSize">Batch Size</Label>
                   <Input
                     id="batchSize"
@@ -757,18 +771,50 @@ const Dashboard = () => {
                     className="bg-input border-border"
                     disabled={isGeneratingTestCases}
                   />
-                  <p className="text-sm text-muted-foreground">Number of reviews to process at once (1-50)</p>
+                  <p className="text-sm text-muted-foreground">Number of reviews to process per batch (1-50)</p>
                 </div>
-                <Button
-                  onClick={handleGenerateTestCases}
-                  disabled={isGeneratingTestCases || !appId.trim()}
-                  className="w-full bg-primary text-primary-foreground hover:bg-secondary"
-                >
-                  {isGeneratingTestCases ? 'Generating...' : 'Generate Test Cases'}
-                </Button>
+                {testCaseRemaining === null ? (
+                  <Button
+                    onClick={handleGenerateTestCases}
+                    disabled={isGeneratingTestCases || !appId.trim()}
+                    className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                  >
+                    {isGeneratingTestCases ? 'Generating...' : `Generate Test Cases (batch of ${batchSize})`}
+                  </Button>
+                ) : testCaseRemaining > 0 ? (
+                  <div className="flex gap-3">
+                    <Button
+                      onClick={handleGenerateTestCases}
+                      disabled={isGeneratingTestCases || !appId.trim()}
+                      className="flex-1 bg-primary text-primary-foreground hover:bg-secondary"
+                    >
+                      {isGeneratingTestCases ? 'Generating...' : `Generate more (${testCaseRemaining} left)`}
+                    </Button>
+                    <Button
+                      onClick={() => setCurrentStep(5)}
+                      variant="outline"
+                      className="flex-1"
+                      disabled={isGeneratingTestCases}
+                    >
+                      Proceed to Settings & APK
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    onClick={() => setCurrentStep(5)}
+                    className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                  >
+                    All done — proceed to Settings & APK
+                  </Button>
+                )}
                 {testCaseStatus && (
                   <div className={`p-4 border rounded ${getNoticeClasses(testCaseStatus)}`}>
                     {testCaseStatus}
+                    {isGeneratingTestCases && (
+                      <p className="text-sm text-muted-foreground mt-2">
+                        Test case generation uses the Qwen model on CPU — each batch may take a minute or two.
+                      </p>
+                    )}
                   </div>
                 )}
                 {testCaseStats && (
@@ -777,14 +823,14 @@ const Dashboard = () => {
                     <div className="grid grid-cols-2 gap-2 text-sm">
                       <div>Total Test Cases: <strong>{testCaseStats.total_test_cases || 0}</strong></div>
                       <div>Coverage: <strong>{testCaseStats.coverage_percentage || 0}%</strong></div>
-                      {testCaseStats.processed !== undefined && <div>Processed: <strong>{testCaseStats.processed}</strong></div>}
-                      {testCaseStats.failed !== undefined && <div>Failed: <strong>{testCaseStats.failed}</strong></div>}
+                      <div>Total Classified: <strong>{testCaseStats.classified_total || classificationStats?.total_classified || 0}</strong></div>
+                      {testCaseRunningTotal > 0 && <div>Generated this session: <strong>{testCaseRunningTotal}</strong></div>}
+                      {testCaseStats.processed !== undefined && <div>Last batch: <strong>{testCaseStats.processed}</strong></div>}
+                      {testCaseRemaining !== null && <div>Remaining: <strong>{testCaseRemaining}</strong></div>}
+                      {testCaseStats.failed !== undefined && testCaseStats.failed > 0 && <div>Failed: <strong>{testCaseStats.failed}</strong></div>}
                     </div>
                   </div>
                 )}
-                <Button onClick={() => setCurrentStep(5)} className="w-full" variant="outline">
-                  Next: Settings & APK
-                </Button>
               </CardContent>
             </Card>
           )}
