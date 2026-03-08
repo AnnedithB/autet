@@ -26,7 +26,7 @@ const Dashboard = () => {
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState('');
   const [scrapeCount, setScrapeCount] = useState(0);
-  const [scrapeProgressStatus, setScrapeProgressStatus] = useState<'idle' | 'running' | 'completed' | 'stopped'>('idle');
+  const [scrapeProgressStatus, setScrapeProgressStatus] = useState<'idle' | 'running' | 'paused' | 'stopping' | 'cleaning' | 'ready' | 'completed'>('idle');
   const [scrapeFromStart, setScrapeFromStart] = useState(false); // false = resume from checkpoint, true = start from beginning
   const [isStopping, setIsStopping] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -40,13 +40,15 @@ const Dashboard = () => {
   const [isStartingNavigation, setIsStartingNavigation] = useState(false);
   const [navigationStatus, setNavigationStatus] = useState('');
   const [startEmulatorWithNavigation, setStartEmulatorWithNavigation] = useState(true);
+  const [uploadedApkPath, setUploadedApkPath] = useState('');
 
   const [useCustomThreshold, setUseCustomThreshold] = useState(false);
   const [threshold, setThreshold] = useState([0.5]);
   const [isClassifying, setIsClassifying] = useState(false);
   const [classificationStatus, setClassificationStatus] = useState('');
   const [classificationStats, setClassificationStats] = useState<any>(null);
-  const [classifyFromStart, setClassifyFromStart] = useState(false);
+  const [classifyRemaining, setClassifyRemaining] = useState<number | null>(null);
+  const [classifyRunningTotal, setClassifyRunningTotal] = useState(0);
 
   const [isGeneratingTestCases, setIsGeneratingTestCases] = useState(false);
   const [testCaseStatus, setTestCaseStatus] = useState('');
@@ -69,9 +71,12 @@ const Dashboard = () => {
       if (res.ok) {
         const data = await res.json();
         setScrapeCount(data.count ?? 0);
-        const status = (data.status ?? 'idle') as 'idle' | 'running' | 'completed' | 'stopped';
+        const status = (data.status ?? 'idle') as typeof scrapeProgressStatus;
         setScrapeProgressStatus((prev) => {
-          if (status === 'idle' && prev === 'running') return prev;
+          // "ready" is a terminal state -- only reset from idle/explicit user action
+          if (prev === 'ready' || prev === 'completed') return prev;
+          // Don't regress from running to idle (stale file)
+          if (status === 'idle' && (prev === 'running' || prev === 'paused' || prev === 'stopping' || prev === 'cleaning')) return prev;
           return status;
         });
       }
@@ -81,7 +86,9 @@ const Dashboard = () => {
   }, [appId]);
 
   useEffect(() => {
-    if (currentStep !== 2 || !appId.trim() || scrapeProgressStatus !== 'running') return;
+    if (currentStep !== 2 || !appId.trim()) return;
+    const shouldPoll = ['running', 'paused', 'stopping', 'cleaning'].includes(scrapeProgressStatus);
+    if (!shouldPoll) return;
     fetchScrapeProgress();
     pollRef.current = setInterval(fetchScrapeProgress, 1500);
     return () => {
@@ -145,7 +152,7 @@ const Dashboard = () => {
     }
   };
 
-  const handleFileSelection = (file: File | null) => {
+  const handleFileSelection = async (file: File | null) => {
     if (uploadTimeoutRef.current) {
       window.clearTimeout(uploadTimeoutRef.current);
       uploadTimeoutRef.current = null;
@@ -170,22 +177,36 @@ const Dashboard = () => {
     setSelectedApk(file);
     setApkUploaded(false);
     setIsUploading(true);
-    setApkStatus('');
+    setApkStatus('Uploading APK to server...');
 
-    uploadTimeoutRef.current = window.setTimeout(() => {
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch(`${API_BASE}/api/appium/upload-apk`, { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.path) {
+        setApkUploaded(true);
+        setUploadedApkPath(data.path);
+        setApkStatus(`APK uploaded: ${file.name}`);
+      } else {
+        setApkStatus(`Upload failed: ${data.error || res.statusText}`);
+        setSelectedApk(null);
+      }
+    } catch (err) {
+      setApkStatus(`Upload error: ${err instanceof Error ? err.message : String(err)}`);
+      setSelectedApk(null);
+    } finally {
       setIsUploading(false);
-      setApkUploaded(true);
-      setApkStatus(`APK ready for scraping: ${file.name}`);
       resetFileInput();
-      uploadTimeoutRef.current = null;
-    }, 1500);
+    }
   };
 
   const handleStartNavigation = async () => {
     setIsStartingNavigation(true);
     setNavigationStatus('');
     try {
-      const url = `${API_BASE}/api/appium/start-navigation?startEmulator=${startEmulatorWithNavigation}`;
+      let url = `${API_BASE}/api/appium/start-navigation?startEmulator=${startEmulatorWithNavigation}`;
+      if (uploadedApkPath) url += `&apkPath=${encodeURIComponent(uploadedApkPath)}`;
       const res = await fetch(url, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (res.ok && (res.status === 202 || data.status === 'started')) {
@@ -233,15 +254,13 @@ const Dashboard = () => {
   const handleStopAndProceed = async () => {
     if (!appId.trim()) return;
     setIsStopping(true);
+    setScrapeProgressStatus('stopping');
     try {
       const res = await fetch(`${API_BASE}/api/scrape/stop?appId=${encodeURIComponent(appId)}`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         setScrapeCount(data.reviewsScraped ?? scrapeCount);
-        setScrapeProgressStatus('stopped');
-        setScrapeStatus(data.message || `Stopped. ${data.reviewsScraped ?? 0} reviews. Classification started in background.`);
-        setCurrentStep(3);
-        fetchStats(); // refresh classification stats when landing on Classify step
+        setScrapeStatus(data.message || 'Scrape stopped. Cleaning reviews...');
       } else {
         setScrapeStatus('Failed to stop scraper.');
       }
@@ -252,7 +271,17 @@ const Dashboard = () => {
     }
   };
 
-  const canProceedFromScrape = scrapeProgressStatus === 'completed' || scrapeProgressStatus === 'stopped';
+  const handleResumeScraping = async () => {
+    if (!appId.trim()) return;
+    try {
+      await fetch(`${API_BASE}/api/scrape/resume?appId=${encodeURIComponent(appId)}`, { method: 'POST' });
+      setScrapeProgressStatus('running');
+    } catch (err) {
+      setScrapeStatus(`Error resuming: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const canProceedFromScrape = scrapeProgressStatus === 'ready' || scrapeProgressStatus === 'completed';
 
   const handleClassifyReviews = async () => {
     if (!appId.trim()) {
@@ -261,11 +290,13 @@ const Dashboard = () => {
     }
     
     setIsClassifying(true);
-    setClassificationStatus('Classifying reviews...');
+    setClassificationStatus('Classifying reviews (batch of 10)...');
     
     try {
       const selectedThreshold = useCustomThreshold ? threshold[0] : undefined;
-      const url = `${API_BASE}/api/classification/classify-reviews?appId=${encodeURIComponent(appId)}${selectedThreshold !== undefined ? `&threshold=${selectedThreshold}` : ''}${classifyFromStart ? '&fromStart=true' : ''}`;
+      const url = `${API_BASE}/api/classification/classify-reviews?appId=${encodeURIComponent(
+        appId
+      )}&limit=10${selectedThreshold !== undefined ? `&threshold=${selectedThreshold}` : ''}`;
       
       const res = await fetch(url, {
         method: 'POST',
@@ -282,7 +313,15 @@ const Dashboard = () => {
       } else {
         const data = await res.json();
         setClassificationStats(data);
-        setClassificationStatus(`Success! Processed ${data.processed} reviews.`);
+        const batchProcessed = data.processed ?? 0;
+        setClassifyRunningTotal(prev => prev + batchProcessed);
+        const remaining = data.remaining ?? 0;
+        setClassifyRemaining(remaining);
+        if (remaining > 0) {
+          setClassificationStatus(`Classified ${batchProcessed} reviews. ${remaining} remaining.`);
+        } else {
+          setClassificationStatus(`Complete! All reviews classified.`);
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -504,7 +543,7 @@ const Dashboard = () => {
                     </Button>
                   </>
                 )}
-                {(scrapeProgressStatus === 'running' || scrapeProgressStatus === 'completed' || scrapeProgressStatus === 'stopped') && (
+                {scrapeProgressStatus !== 'idle' && (
                   <>
                     <div className="flex flex-col items-center py-8">
                       <span className="text-sm text-muted-foreground mb-2">Reviews scraped</span>
@@ -513,8 +552,11 @@ const Dashboard = () => {
                       </span>
                       <span className="mt-2 text-sm text-muted-foreground">
                         {scrapeProgressStatus === 'running' && 'Scraping...'}
+                        {scrapeProgressStatus === 'paused' && 'Paused — scrape more or proceed to classify?'}
+                        {scrapeProgressStatus === 'stopping' && 'Stopping...'}
+                        {scrapeProgressStatus === 'cleaning' && 'Cleaning & importing reviews...'}
+                        {scrapeProgressStatus === 'ready' && 'Ready to classify'}
                         {scrapeProgressStatus === 'completed' && 'Complete'}
-                        {scrapeProgressStatus === 'stopped' && 'Stopped'}
                       </span>
                     </div>
                     {scrapeProgressStatus === 'running' && (
@@ -524,8 +566,26 @@ const Dashboard = () => {
                         disabled={isStopping}
                         className="w-full"
                       >
-                        {isStopping ? 'Stopping...' : 'Stop & proceed to Classify'}
+                        {isStopping ? 'Stopping…' : 'Stop scraping'}
                       </Button>
+                    )}
+                    {scrapeProgressStatus === 'paused' && (
+                      <div className="flex gap-3">
+                        <Button
+                          onClick={handleResumeScraping}
+                          className="flex-1 bg-primary text-primary-foreground hover:bg-secondary"
+                        >
+                          Continue scraping
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          onClick={handleStopAndProceed}
+                          disabled={isStopping}
+                          className="flex-1"
+                        >
+                          {isStopping ? 'Stopping…' : 'Stop & proceed to classify'}
+                        </Button>
+                      </div>
                     )}
                     {canProceedFromScrape && (
                       <Button
@@ -568,34 +628,10 @@ const Dashboard = () => {
                     disabled={isClassifying}
                   />
                 </div>
-                <div className="space-y-3">
-                  <Label className="text-sm font-medium">Classification mode</Label>
-                  <div className="flex gap-6">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="classifyMode"
-                        checked={!classifyFromStart}
-                        onChange={() => setClassifyFromStart(false)}
-                        className="rounded-full"
-                      />
-                      <span className="text-sm">Resume (skip already classified)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="classifyMode"
-                        checked={classifyFromStart}
-                        onChange={() => setClassifyFromStart(true)}
-                        className="rounded-full"
-                      />
-                      <span className="text-sm">From beginning (re-classify all)</span>
-                    </label>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {classifyFromStart ? 'Clear existing classifications for this app and run on all reviews again.' : 'Only classify reviews not yet in the database.'}
-                  </p>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  Newly scraped reviews that have not been classified yet will be processed. Previously classified
+                  reviews are skipped.
+                </p>
                 <div className="space-y-4 p-4 border rounded-lg">
                   <div className="flex items-center justify-between">
                     <div className="space-y-0.5">
@@ -621,13 +657,40 @@ const Dashboard = () => {
                     </div>
                   )}
                 </div>
-                <Button
-                  onClick={handleClassifyReviews}
-                  disabled={isClassifying || !appId.trim()}
-                  className="w-full bg-primary text-primary-foreground hover:bg-secondary"
-                >
-                  {isClassifying ? 'Classifying...' : 'Classify Reviews'}
-                </Button>
+                {classifyRemaining === null ? (
+                  <Button
+                    onClick={handleClassifyReviews}
+                    disabled={isClassifying || !appId.trim()}
+                    className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                  >
+                    {isClassifying ? 'Classifying...' : 'Classify Reviews (batch of 10)'}
+                  </Button>
+                ) : classifyRemaining > 0 ? (
+                  <div className="flex gap-3">
+                    <Button
+                      onClick={handleClassifyReviews}
+                      disabled={isClassifying || !appId.trim()}
+                      className="flex-1 bg-primary text-primary-foreground hover:bg-secondary"
+                    >
+                      {isClassifying ? 'Classifying...' : `Classify more (${classifyRemaining} left)`}
+                    </Button>
+                    <Button
+                      onClick={() => setCurrentStep(4)}
+                      variant="outline"
+                      className="flex-1"
+                      disabled={isClassifying}
+                    >
+                      Proceed to test cases
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    onClick={() => setCurrentStep(4)}
+                    className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                  >
+                    All classified — proceed to test cases
+                  </Button>
+                )}
                 {classificationStatus && (
                   <div className={`p-4 border rounded ${getNoticeClasses(classificationStatus)}`}>
                     {classificationStatus}
@@ -643,15 +706,24 @@ const Dashboard = () => {
                     <h4 className="font-semibold mb-2">Classification Statistics</h4>
                     <div className="grid grid-cols-2 gap-2 text-sm">
                       <div>Total Classified: <strong>{classificationStats.total_classified || 0}</strong></div>
-                      {classificationStats.processed !== undefined && <div>Processed: <strong>{classificationStats.processed}</strong></div>}
+                      {classifyRunningTotal > 0 && <div>Classified this session: <strong>{classifyRunningTotal}</strong></div>}
+                      {classificationStats.processed !== undefined && <div>Last batch: <strong>{classificationStats.processed}</strong></div>}
+                      {classifyRemaining !== null && <div>Remaining: <strong>{classifyRemaining}</strong></div>}
                       {classificationStats.skipped !== undefined && <div>Skipped: <strong>{classificationStats.skipped}</strong></div>}
                       {classificationStats.errors !== undefined && <div>Errors: <strong>{classificationStats.errors}</strong></div>}
+                      {classificationStats.threshold_used !== undefined && (
+                        <div>
+                          Threshold used:{' '}
+                          <strong>
+                            {typeof classificationStats.threshold_used === 'number'
+                              ? classificationStats.threshold_used.toFixed(2)
+                              : classificationStats.threshold_used}
+                          </strong>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
-                <Button onClick={() => setCurrentStep(4)} className="w-full" variant="outline">
-                  Next: Generate test cases
-                </Button>
               </CardContent>
             </Card>
           )}
@@ -752,10 +824,10 @@ const Dashboard = () => {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <UploadCloud className="text-primary" size={24} />
-                    Upload APK (Optional)
+                    Upload APK
                   </CardTitle>
                   <CardDescription>
-                    APK upload for Appium testing. You can scrape and classify with just the App ID.
+                    APK upload is required for Appium testing.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
