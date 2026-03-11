@@ -41,6 +41,9 @@ const Dashboard = () => {
   const [navigationStatus, setNavigationStatus] = useState('');
   const [startEmulatorWithNavigation, setStartEmulatorWithNavigation] = useState(true);
   const [uploadedApkPath, setUploadedApkPath] = useState('');
+  const [isUploadingCreds, setIsUploadingCreds] = useState(false);
+  const [testCredStatus, setTestCredStatus] = useState('');
+  const testCredInputRef = useRef<HTMLInputElement>(null);
 
   const [useCustomThreshold, setUseCustomThreshold] = useState(false);
   const [threshold, setThreshold] = useState([0.5]);
@@ -210,6 +213,7 @@ const Dashboard = () => {
       let url = `${API_BASE}/api/appium/start-navigation?startEmulator=${startEmulatorWithNavigation}`;
       if (uploadedApkPath) url += `&apkPath=${encodeURIComponent(uploadedApkPath)}`;
       if (appId.trim()) url += `&appId=${encodeURIComponent(appId.trim())}`;
+      if (appId.trim()) url += `&appId=${encodeURIComponent(appId.trim())}`;
       const res = await fetch(url, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (res.ok && (res.status === 202 || data.status === 'started')) {
@@ -221,6 +225,37 @@ const Dashboard = () => {
       setNavigationStatus(`Network error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsStartingNavigation(false);
+    }
+  };
+
+  const handleTestCredSelection = async (file: File | null) => {
+    if (!file) {
+      setTestCredStatus('');
+      setIsUploadingCreds(false);
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith('.txt')) {
+      setTestCredStatus('Only .txt files are supported');
+      setIsUploadingCreds(false);
+      return;
+    }
+    setIsUploadingCreds(true);
+    setTestCredStatus('Uploading test credentials...');
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch(`${API_BASE}/api/appium/upload-creds`, { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setTestCredStatus('Test credentials uploaded. They will be used to fill login forms automatically.');
+      } else {
+        setTestCredStatus(`Upload failed: ${data.error || res.statusText}`);
+      }
+    } catch (err) {
+      setTestCredStatus(`Upload error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsUploadingCreds(false);
+      if (testCredInputRef.current) testCredInputRef.current.value = '';
     }
   };
 
@@ -864,6 +899,52 @@ const Dashboard = () => {
                       <li><strong>0.6 - 1.0:</strong> Very strict</li>
                     </ul>
                   </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <UploadCloud className="text-primary" size={24} />
+                    Test credentials
+                  </CardTitle>
+                  <CardDescription>
+                    Upload a simple <code>.txt</code> file with screen names and inputs (see sampleTestCred.txt in the appium folder).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Example:
+                    <br />
+                    <code className="text-xs">
+                      Login Screen
+                      <br />
+                      Email = user@example.com
+                      <br />
+                      Password = secret123
+                    </code>
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <Input
+                      type="file"
+                      accept=".txt"
+                      ref={testCredInputRef}
+                      className="bg-input border-border"
+                      onChange={(e) => handleTestCredSelection(e.target.files?.[0] ?? null)}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isUploadingCreds}
+                      onClick={() => testCredInputRef.current?.click()}
+                    >
+                      {isUploadingCreds ? 'Uploading…' : 'Choose file'}
+                    </Button>
+                  </div>
+                  {testCredStatus && (
+                    <div className={`mt-2 p-3 border rounded ${getNoticeClasses(testCredStatus)}`}>
+                      {testCredStatus}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
               <Card>
