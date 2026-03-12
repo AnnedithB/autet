@@ -30,17 +30,11 @@ const Dashboard = () => {
   const [scrapeFromStart, setScrapeFromStart] = useState(false); // false = resume from checkpoint, true = start from beginning
   const [isStopping, setIsStopping] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [selectedApk, setSelectedApk] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [apkStatus, setApkStatus] = useState('');
-  const [apkUploaded, setApkUploaded] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDragActive, setIsDragActive] = useState(false);
-  const uploadTimeoutRef = useRef<number | null>(null);
   const [isStartingNavigation, setIsStartingNavigation] = useState(false);
   const [navigationStatus, setNavigationStatus] = useState('');
   const [startEmulatorWithNavigation, setStartEmulatorWithNavigation] = useState(true);
-  const [uploadedApkPath, setUploadedApkPath] = useState('');
+  const [isStartingCrawler, setIsStartingCrawler] = useState(false);
+  const [crawlerStatus, setCrawlerStatus] = useState('');
   const [isUploadingCreds, setIsUploadingCreds] = useState(false);
   const [testCredStatus, setTestCredStatus] = useState('');
   const testCredInputRef = useRef<HTMLInputElement>(null);
@@ -64,7 +58,6 @@ const Dashboard = () => {
 
   useEffect(() => {
     return () => {
-      if (uploadTimeoutRef.current) window.clearTimeout(uploadTimeoutRef.current);
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
@@ -151,68 +144,12 @@ const Dashboard = () => {
     return 'bg-muted border-border text-foreground';
   };
 
-  const resetFileInput = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handleFileSelection = async (file: File | null) => {
-    if (uploadTimeoutRef.current) {
-      window.clearTimeout(uploadTimeoutRef.current);
-      uploadTimeoutRef.current = null;
-    }
-
-    if (!file) {
-      setSelectedApk(null);
-      setApkUploaded(false);
-      setIsUploading(false);
-      return;
-    }
-
-    if (!file.name.toLowerCase().endsWith('.apk')) {
-      setApkStatus('Only .apk files are supported');
-      setSelectedApk(null);
-      resetFileInput();
-      setApkUploaded(false);
-      setIsUploading(false);
-      return;
-    }
-
-    setSelectedApk(file);
-    setApkUploaded(false);
-    setIsUploading(true);
-    setApkStatus('Uploading APK to server...');
-
-    const formData = new FormData();
-    formData.append('file', file);
-    try {
-      const res = await fetch(`${API_BASE}/api/appium/upload-apk`, { method: 'POST', body: formData });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.path) {
-        setApkUploaded(true);
-        setUploadedApkPath(data.path);
-        setApkStatus(`APK uploaded: ${file.name}`);
-      } else {
-        setApkStatus(`Upload failed: ${data.error || res.statusText}`);
-        setSelectedApk(null);
-      }
-    } catch (err) {
-      setApkStatus(`Upload error: ${err instanceof Error ? err.message : String(err)}`);
-      setSelectedApk(null);
-    } finally {
-      setIsUploading(false);
-      resetFileInput();
-    }
-  };
-
   const handleStartNavigation = async () => {
     setIsStartingNavigation(true);
     setNavigationStatus('');
+    setCrawlerStatus('');
     try {
       let url = `${API_BASE}/api/appium/start-navigation?startEmulator=${startEmulatorWithNavigation}`;
-      if (uploadedApkPath) url += `&apkPath=${encodeURIComponent(uploadedApkPath)}`;
-      if (appId.trim()) url += `&appId=${encodeURIComponent(appId.trim())}`;
       if (appId.trim()) url += `&appId=${encodeURIComponent(appId.trim())}`;
       const res = await fetch(url, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
@@ -225,6 +162,29 @@ const Dashboard = () => {
       setNavigationStatus(`Network error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsStartingNavigation(false);
+    }
+  };
+
+  const handleStartCrawler = async () => {
+    if (!appId.trim()) {
+      setCrawlerStatus('Please enter an App ID (Android package name) first.');
+      return;
+    }
+    setIsStartingCrawler(true);
+    setCrawlerStatus('Starting crawler for app...');
+    try {
+      let url = `${API_BASE}/api/appium/start-crawler?appId=${encodeURIComponent(appId.trim())}`;
+      const res = await fetch(url, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && (res.status === 202 || data.status === 'started')) {
+        setCrawlerStatus(data.message || 'Crawler started. Watch the emulator and backend/appium_navigation_log.txt.');
+      } else {
+        setCrawlerStatus(data.error || `Error: ${res.status}`);
+      }
+    } catch (err) {
+      setCrawlerStatus(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsStartingCrawler(false);
     }
   };
 
@@ -950,60 +910,13 @@ const Dashboard = () => {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <UploadCloud className="text-primary" size={24} />
-                    Upload APK
-                  </CardTitle>
-                  <CardDescription>
-                    APK upload is required for Appium testing.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div
-                    className={`p-6 flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all ${
-                      isDragActive ? 'border-primary bg-primary/5' : 'border-border/60 bg-card/60'
-                    }`}
-                    onDragOver={(e) => { e.preventDefault(); setIsDragActive(true); }}
-                    onDragEnter={(e) => { e.preventDefault(); setIsDragActive(true); }}
-                    onDragLeave={(e) => { e.preventDefault(); setIsDragActive(false); }}
-                    onDrop={(e) => { e.preventDefault(); setIsDragActive(false); handleFileSelection(e.dataTransfer.files?.[0] ?? null); }}
-                    onClick={() => fileInputRef.current?.click()}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current?.click(); } }}
-                  >
-                    <UploadCloud className="text-muted-foreground" size={48} />
-                    <p className="mt-4 font-semibold">Upload APK</p>
-                    <p className="mt-2 text-sm text-muted-foreground">Drag and drop or click to select</p>
-                    {isUploading && selectedApk && (
-                      <div className="mt-4 flex items-center gap-2 text-sm text-primary">
-                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                        Uploading {selectedApk.name}...
-                      </div>
-                    )}
-                    {!isUploading && selectedApk && <p className="mt-4 text-sm text-primary">Ready: {selectedApk.name}</p>}
-                    <input
-                      type="file"
-                      accept=".apk"
-                      ref={fileInputRef}
-                      className="hidden"
-                      onChange={(e) => handleFileSelection(e.target.files?.[0] ?? null)}
-                    />
-                  </div>
-                  {apkStatus && (
-                    <div className={`mt-4 p-4 border rounded ${getNoticeClasses(apkStatus)}`}>
-                      {apkStatus}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
                     <Navigation className="text-primary" size={24} />
                     Start navigating
                   </CardTitle>
                   <CardDescription>
-                    Run the Appium UI crawler to build the navigation graph. With emulator on, you can watch the crawler in the emulator window.
+                    1. Click <strong>Start navigating</strong> to launch the emulator and Appium server.
+                    2. When the emulator is open, drag and drop your Daraz APK/APKM from your Downloads folder onto the emulator window and complete the install dialog.
+                    3. After install, click <strong>Start crawler</strong> to attach to the running app and build the navigation graph.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -1022,23 +935,38 @@ const Dashboard = () => {
                   <p className="text-sm text-muted-foreground">
                     Ensure Appium server is running on port 4723. You need Android Studio and at least one AVD (ANDROID_HOME set).
                   </p>
-                  <Button
-                    onClick={handleStartNavigation}
-                    disabled={isStartingNavigation}
-                    className="w-full sm:w-auto"
-                  >
-                    {isStartingNavigation ? (
-                      <>
-                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent mr-2 inline-block" />
-                        Starting…
-                      </>
-                    ) : (
-                      'Start navigating'
-                    )}
-                  </Button>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <Button
+                      onClick={handleStartNavigation}
+                      disabled={isStartingNavigation}
+                      className="flex-1 sm:flex-none"
+                    >
+                      {isStartingNavigation ? (
+                        <>
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent mr-2 inline-block" />
+                          Starting emulator…
+                        </>
+                      ) : (
+                        'Start navigating'
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={handleStartCrawler}
+                      disabled={isStartingCrawler}
+                      className="flex-1 sm:flex-none"
+                    >
+                      {isStartingCrawler ? 'Starting crawler…' : 'Start crawler'}
+                    </Button>
+                  </div>
                   {navigationStatus && (
                     <div className={`mt-4 p-4 border rounded ${getNoticeClasses(navigationStatus)}`}>
                       {navigationStatus}
+                    </div>
+                  )}
+                  {crawlerStatus && (
+                    <div className={`mt-2 p-4 border rounded ${getNoticeClasses(crawlerStatus)}`}>
+                      {crawlerStatus}
                     </div>
                   )}
                 </CardContent>
