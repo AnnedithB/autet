@@ -16,13 +16,15 @@ const STEPS = [
   { id: 1, label: 'App ID' },
   { id: 2, label: 'Scrape' },
   { id: 3, label: 'Classify' },
-  { id: 4, label: 'Test Cases' },
-  { id: 5, label: 'Settings & APK' },
+  { id: 4, label: 'Navigation' },
+  { id: 5, label: 'Test Cases' },
 ];
 
 const Dashboard = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [appId, setAppId] = useState('');
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [emailStatus, setEmailStatus] = useState('');
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState('');
   const [scrapeCount, setScrapeCount] = useState(0);
@@ -400,7 +402,7 @@ const Dashboard = () => {
 
   // When entering Classify or Test Cases step, refresh stats so user sees counts
   useEffect(() => {
-    if ((currentStep === 3 || currentStep === 4) && appId.trim()) {
+    if ((currentStep === 3 || currentStep === 5) && appId.trim()) {
       fetchStats();
       const interval = setInterval(fetchStats, 3000);
       return () => clearInterval(interval);
@@ -473,7 +475,7 @@ const Dashboard = () => {
               <CardHeader>
                 <CardTitle>Enter App ID</CardTitle>
                 <CardDescription>
-                  Enter the Google Play Store App ID to scrape reviews (e.g. com.example.app).
+                  Enter the Google Play Store App ID (package name) and the email to receive step completion notifications.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -488,13 +490,49 @@ const Dashboard = () => {
                     className="bg-input border-border"
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="recipientEmail">Notification email</Label>
+                  <Input
+                    id="recipientEmail"
+                    type="email"
+                    placeholder="you@example.com"
+                    value={recipientEmail}
+                    onChange={(e) => setRecipientEmail(DOMPurify.sanitize(e.target.value))}
+                    className="bg-input border-border"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    We will email you when each step completes.
+                  </p>
+                </div>
                 <Button
-                  onClick={() => setCurrentStep(2)}
+                  onClick={async () => {
+                    setEmailStatus('');
+                    if (appId.trim() && recipientEmail.trim()) {
+                      try {
+                        const res = await fetch(
+                          `${API_BASE}/api/notifications/recipient?appId=${encodeURIComponent(appId.trim())}&email=${encodeURIComponent(recipientEmail.trim())}`,
+                          { method: 'POST' }
+                        );
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                          setEmailStatus(data.error || `Failed to save email (${res.status})`);
+                        }
+                      } catch (err) {
+                        setEmailStatus(`Network error saving email: ${err instanceof Error ? err.message : String(err)}`);
+                      }
+                    }
+                    setCurrentStep(2);
+                  }}
                   disabled={!appId.trim()}
                   className="w-full bg-primary text-primary-foreground hover:bg-secondary"
                 >
                   Next: Scrape reviews
                 </Button>
+                {emailStatus && (
+                  <div className={`p-3 border rounded ${getNoticeClasses(emailStatus)}`}>
+                    {emailStatus}
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}
@@ -686,7 +724,7 @@ const Dashboard = () => {
                       className="flex-1"
                       disabled={isClassifying}
                     >
-                      Proceed to test cases
+                      Proceed to navigation
                     </Button>
                   </div>
                 ) : (
@@ -694,7 +732,7 @@ const Dashboard = () => {
                     onClick={() => setCurrentStep(4)}
                     className="w-full bg-primary text-primary-foreground hover:bg-secondary"
                   >
-                    All classified — proceed to test cases
+                    All classified — proceed to navigation
                   </Button>
                 )}
                 {classificationStatus && (
@@ -734,133 +772,9 @@ const Dashboard = () => {
             </Card>
           )}
 
-          {/* Step 4: Test cases */}
+          {/* Step 4: Navigation */} 
           {currentStep === 4 && (
-            <Card className="max-w-2xl">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <TestTube className="text-primary" size={24} />
-                  Test Case Generation
-                </CardTitle>
-                <CardDescription>
-                  Generate test cases in Given-When-Then format from classified reviews
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-2">
-                  <Label>App ID</Label>
-                  <Input value={appId} onChange={(e) => setAppId(DOMPurify.sanitize(e.target.value))} className="bg-input border-border" disabled={isGeneratingTestCases} />
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Classified reviews without test cases will be processed. Already-generated test cases are skipped.
-                </p>
-                <div className="space-y-2 p-4 border rounded-lg">
-                  <Label htmlFor="batchSize">Batch Size</Label>
-                  <Input
-                    id="batchSize"
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={batchSize}
-                    onChange={(e) => setBatchSize(parseInt(e.target.value) || 10)}
-                    className="bg-input border-border"
-                    disabled={isGeneratingTestCases}
-                  />
-                  <p className="text-sm text-muted-foreground">Number of reviews to process per batch (1-50)</p>
-                </div>
-                {testCaseRemaining === null ? (
-                  <Button
-                    onClick={handleGenerateTestCases}
-                    disabled={isGeneratingTestCases || !appId.trim()}
-                    className="w-full bg-primary text-primary-foreground hover:bg-secondary"
-                  >
-                    {isGeneratingTestCases ? 'Generating...' : `Generate Test Cases (batch of ${batchSize})`}
-                  </Button>
-                ) : testCaseRemaining > 0 ? (
-                  <div className="flex gap-3">
-                    <Button
-                      onClick={handleGenerateTestCases}
-                      disabled={isGeneratingTestCases || !appId.trim()}
-                      className="flex-1 bg-primary text-primary-foreground hover:bg-secondary"
-                    >
-                      {isGeneratingTestCases ? 'Generating...' : `Generate more (${testCaseRemaining} left)`}
-                    </Button>
-                    <Button
-                      onClick={() => setCurrentStep(5)}
-                      variant="outline"
-                      className="flex-1"
-                      disabled={isGeneratingTestCases}
-                    >
-                      Proceed to Settings & APK
-                    </Button>
-                  </div>
-                ) : (
-                  <Button
-                    onClick={() => setCurrentStep(5)}
-                    className="w-full bg-primary text-primary-foreground hover:bg-secondary"
-                  >
-                    All done — proceed to Settings & APK
-                  </Button>
-                )}
-                {testCaseStatus && (
-                  <div className={`p-4 border rounded ${getNoticeClasses(testCaseStatus)}`}>
-                    {testCaseStatus}
-                    {isGeneratingTestCases && (
-                      <p className="text-sm text-muted-foreground mt-2">
-                        Test case generation uses the Qwen model on CPU — each batch may take a minute or two.
-                      </p>
-                    )}
-                  </div>
-                )}
-                {testCaseStats && (
-                  <div className="p-4 border rounded bg-muted/50">
-                    <h4 className="font-semibold mb-2">Test Case Statistics</h4>
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div>Total Test Cases: <strong>{testCaseStats.total_test_cases || 0}</strong></div>
-                      <div>Coverage: <strong>{testCaseStats.coverage_percentage || 0}%</strong></div>
-                      <div>Total Classified: <strong>{testCaseStats.classified_total || classificationStats?.total_classified || 0}</strong></div>
-                      {testCaseRunningTotal > 0 && <div>Generated this session: <strong>{testCaseRunningTotal}</strong></div>}
-                      {testCaseStats.processed !== undefined && <div>Last batch: <strong>{testCaseStats.processed}</strong></div>}
-                      {testCaseRemaining !== null && <div>Remaining: <strong>{testCaseRemaining}</strong></div>}
-                      {testCaseStats.failed !== undefined && testCaseStats.failed > 0 && <div>Failed: <strong>{testCaseStats.failed}</strong></div>}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Step 5: Settings & APK */}
-          {currentStep === 5 && (
             <div className="grid gap-6 max-w-2xl">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Settings className="text-primary" size={24} />
-                    Settings
-                  </CardTitle>
-                  <CardDescription>
-                    Configure classification and test case generation settings
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Default Threshold: 0.5</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Override in the Classify step. 0.4–0.6 is recommended.
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Threshold Guide</Label>
-                    <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
-                      <li><strong>0.0 - 0.2:</strong> Very loose</li>
-                      <li><strong>0.2 - 0.4:</strong> Moderate</li>
-                      <li><strong>0.4 - 0.6:</strong> Strict (default 0.5)</li>
-                      <li><strong>0.6 - 1.0:</strong> Very strict</li>
-                    </ul>
-                  </div>
-                </CardContent>
-              </Card>
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
@@ -907,16 +821,17 @@ const Dashboard = () => {
                   )}
                 </CardContent>
               </Card>
+
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <Navigation className="text-primary" size={24} />
-                    Start navigating
+                    Navigation (Appium)
                   </CardTitle>
                   <CardDescription>
                     1. Click <strong>Start navigating</strong> to launch the emulator and Appium server.
                     2. When the emulator is open, drag and drop your Daraz APK/APKM from your Downloads folder onto the emulator window and complete the install dialog.
-                    3. After install, click <strong>Start crawler</strong> to attach to the running app and build the navigation graph.
+                    3. After install, click <strong>Start crawler</strong> to attach to the app and build the navigation graph.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -969,9 +884,86 @@ const Dashboard = () => {
                       {crawlerStatus}
                     </div>
                   )}
+
+                  <Button
+                    onClick={() => setCurrentStep(5)}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    Next: Generate test cases
+                  </Button>
                 </CardContent>
               </Card>
             </div>
+          )}
+
+          {/* Step 5: Test cases */}
+          {currentStep === 5 && (
+            <Card className="max-w-2xl">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <TestTube className="text-primary" size={24} />
+                  Test Case Generation
+                </CardTitle>
+                <CardDescription>
+                  Generate test cases in Given-When-Then format from classified reviews
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="space-y-2">
+                  <Label>App ID</Label>
+                  <Input value={appId} onChange={(e) => setAppId(DOMPurify.sanitize(e.target.value))} className="bg-input border-border" disabled={isGeneratingTestCases} />
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Classified reviews without test cases will be processed. Already-generated test cases are skipped.
+                </p>
+                <div className="space-y-2 p-4 border rounded-lg">
+                  <Label htmlFor="batchSize">Batch Size</Label>
+                  <Input
+                    id="batchSize"
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={batchSize}
+                    onChange={(e) => setBatchSize(parseInt(e.target.value) || 10)}
+                    className="bg-input border-border"
+                    disabled={isGeneratingTestCases}
+                  />
+                  <p className="text-sm text-muted-foreground">Number of reviews to process per batch (1-50)</p>
+                </div>
+                <Button
+                  onClick={handleGenerateTestCases}
+                  disabled={isGeneratingTestCases || !appId.trim()}
+                  className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                >
+                  {isGeneratingTestCases ? 'Generating...' : `Generate Test Cases (batch of ${batchSize})`}
+                </Button>
+                {testCaseStatus && (
+                  <div className={`p-4 border rounded ${getNoticeClasses(testCaseStatus)}`}>
+                    {testCaseStatus}
+                    {isGeneratingTestCases && (
+                      <p className="text-sm text-muted-foreground mt-2">
+                        Test case generation uses the Qwen model on CPU — each batch may take a minute or two.
+                      </p>
+                    )}
+                  </div>
+                )}
+                {testCaseStats && (
+                  <div className="p-4 border rounded bg-muted/50">
+                    <h4 className="font-semibold mb-2">Test Case Statistics</h4>
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div>Total Test Cases: <strong>{testCaseStats.total_test_cases || 0}</strong></div>
+                      <div>Coverage: <strong>{testCaseStats.coverage_percentage || 0}%</strong></div>
+                      <div>Total Classified: <strong>{testCaseStats.classified_total || classificationStats?.total_classified || 0}</strong></div>
+                      {testCaseRunningTotal > 0 && <div>Generated this session: <strong>{testCaseRunningTotal}</strong></div>}
+                      {testCaseStats.processed !== undefined && <div>Last batch: <strong>{testCaseStats.processed}</strong></div>}
+                      {testCaseRemaining !== null && <div>Remaining: <strong>{testCaseRemaining}</strong></div>}
+                      {testCaseStats.failed !== undefined && testCaseStats.failed > 0 && <div>Failed: <strong>{testCaseStats.failed}</strong></div>}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           )}
         </div>
       </main>
