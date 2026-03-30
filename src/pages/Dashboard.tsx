@@ -4,10 +4,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
-import { Sparkles, Database, Zap, UploadCloud, Brain, TestTube, Settings, Check, ChevronRight, Navigation } from 'lucide-react';
+import { Sparkles, Database, Zap, UploadCloud, Brain, TestTube, Settings, Check, ChevronRight, Navigation, Layers } from 'lucide-react';
 import DOMPurify from "dompurify";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
@@ -18,6 +19,7 @@ const STEPS = [
   { id: 3, label: 'Classify' },
   { id: 4, label: 'Navigation' },
   { id: 5, label: 'Test Cases' },
+  { id: 6, label: 'Enriched tests' },
 ];
 
 const Dashboard = () => {
@@ -57,6 +59,17 @@ const Dashboard = () => {
   const [testCaseRunningTotal, setTestCaseRunningTotal] = useState(0);
   const [displayCount, setDisplayCount] = useState(0);
   const displayCountRef = useRef(0);
+
+  const [navGraphReady, setNavGraphReady] = useState<boolean | null>(null);
+  const [enrichedItems, setEnrichedItems] = useState<any[]>([]);
+  const [isEnriching, setIsEnriching] = useState(false);
+  const [enrichStatus, setEnrichStatus] = useState('');
+  const [enrichSummary, setEnrichSummary] = useState<any>(null);
+  const [enrichLimit, setEnrichLimit] = useState<number | ''>('');
+  const [editingEnrichedId, setEditingEnrichedId] = useState<string | null>(null);
+  const [editTestInputsJson, setEditTestInputsJson] = useState('');
+  const [editExpandedJson, setEditExpandedJson] = useState('');
+  const [saveEnrichedStatus, setSaveEnrichedStatus] = useState('');
 
   useEffect(() => {
     return () => {
@@ -373,6 +386,117 @@ const Dashboard = () => {
       setIsGeneratingTestCases(false);
     }
   };
+
+  const fetchNavigationGraphMeta = useCallback(async () => {
+    if (!appId.trim()) return;
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/appium/navigation-graph?appId=${encodeURIComponent(appId)}`
+      );
+      setNavGraphReady(r.ok);
+    } catch {
+      setNavGraphReady(false);
+    }
+  }, [appId]);
+
+  const fetchEnrichedList = useCallback(async () => {
+    if (!appId.trim()) return;
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/enriched-tests/list?appId=${encodeURIComponent(appId)}`
+      );
+      if (r.ok) {
+        const d = await r.json();
+        setEnrichedItems(d.items || []);
+      }
+    } catch {
+      // ignore
+    }
+  }, [appId]);
+
+  const handleRunEnrichment = async () => {
+    if (!appId.trim()) {
+      setEnrichStatus('Please enter an App ID');
+      return;
+    }
+    setIsEnriching(true);
+    setEnrichStatus('Running navigation + GWT model (may take a while per test case)...');
+    setEnrichSummary(null);
+    try {
+      let url = `${API_BASE}/api/enriched-tests/enrich?appId=${encodeURIComponent(appId)}`;
+      if (enrichLimit !== '' && Number(enrichLimit) > 0) {
+        url += `&limit=${encodeURIComponent(String(enrichLimit))}`;
+      }
+      const res = await fetch(url, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEnrichStatus(data.error || data.detail || res.statusText || 'Enrichment failed');
+        return;
+      }
+      setEnrichSummary(data);
+      setEnrichStatus(
+        `Done: processed ${data.processed ?? 0} of ${data.total_candidates ?? 0}. Failed: ${data.failed ?? 0}.`
+      );
+      await fetchEnrichedList();
+    } catch (err) {
+      setEnrichStatus(err instanceof Error ? err.message : 'Network error');
+    } finally {
+      setIsEnriching(false);
+    }
+  };
+
+  const startEditEnriched = (item: any) => {
+    setEditingEnrichedId(item.id);
+    setEditTestInputsJson(JSON.stringify(item.test_inputs_by_screen || {}, null, 2));
+    setEditExpandedJson(JSON.stringify(item.expanded_test_cases || [], null, 2));
+    setSaveEnrichedStatus('');
+  };
+
+  const cancelEditEnriched = () => {
+    setEditingEnrichedId(null);
+    setEditTestInputsJson('');
+    setEditExpandedJson('');
+    setSaveEnrichedStatus('');
+  };
+
+  const saveEditEnriched = async () => {
+    if (!editingEnrichedId) return;
+    let tin: unknown;
+    let exp: unknown;
+    try {
+      tin = JSON.parse(editTestInputsJson);
+      exp = JSON.parse(editExpandedJson);
+    } catch {
+      setSaveEnrichedStatus('Invalid JSON — check syntax.');
+      return;
+    }
+    try {
+      const r = await fetch(`${API_BASE}/api/enriched-tests/${editingEnrichedId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          test_inputs_by_screen: tin,
+          expanded_test_cases: exp,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setSaveEnrichedStatus(data.error || r.statusText || 'Save failed');
+        return;
+      }
+      setSaveEnrichedStatus('Saved.');
+      cancelEditEnriched();
+      await fetchEnrichedList();
+    } catch (err) {
+      setSaveEnrichedStatus(err instanceof Error ? err.message : 'Network error');
+    }
+  };
+
+  useEffect(() => {
+    if (currentStep !== 6 || !appId.trim()) return;
+    fetchNavigationGraphMeta();
+    fetchEnrichedList();
+  }, [currentStep, appId, fetchNavigationGraphMeta, fetchEnrichedList]);
 
   const fetchStats = async () => {
     if (!appId.trim()) return;
@@ -962,6 +1086,166 @@ const Dashboard = () => {
                     </div>
                   </div>
                 )}
+                <Button
+                  onClick={() => setCurrentStep(6)}
+                  variant="outline"
+                  className="w-full"
+                  disabled={!appId.trim()}
+                >
+                  Next: Enriched tests (inputs + scenarios)
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Step 6: Enriched test outputs (navigation LoRA) */}
+          {currentStep === 6 && (
+            <Card className="max-w-4xl">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Layers className="text-primary" size={24} />
+                  Enriched tests
+                </CardTitle>
+                <CardDescription>
+                  Uses the crawler navigation JSON plus your Given–When–Then test cases to propose field-level test
+                  data and expanded scenarios. Requires a finished crawl and the Colab LoRA in{' '}
+                  <code className="text-xs">backend/models/lora_mobile_testgen</code>.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="space-y-2">
+                  <Label>App ID</Label>
+                  <Input
+                    value={appId}
+                    onChange={(e) => setAppId(DOMPurify.sanitize(e.target.value))}
+                    className="bg-input border-border"
+                    disabled={isEnriching}
+                  />
+                </div>
+                <div className="p-4 border rounded-lg text-sm space-y-2">
+                  <div>
+                    <span className="font-medium">Navigation graph file: </span>
+                    {navGraphReady === null && <span className="text-muted-foreground">Checking…</span>}
+                    {navGraphReady === true && (
+                      <span className="text-primary">Found (crawler export ready)</span>
+                    )}
+                    {navGraphReady === false && (
+                      <span className="text-destructive">
+                        Missing — run the crawler in step 4 for this app first.
+                      </span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="font-medium">Enriched rows saved: </span>
+                    {enrichedItems.length}
+                  </div>
+                </div>
+                <div className="space-y-2 p-4 border rounded-lg">
+                  <Label>Optional: max test cases to process</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    placeholder="Leave empty for all"
+                    value={enrichLimit === '' ? '' : enrichLimit}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setEnrichLimit(v === '' ? '' : parseInt(v, 10) || '');
+                    }}
+                    className="bg-input border-border"
+                    disabled={isEnriching}
+                  />
+                </div>
+                <Button
+                  onClick={handleRunEnrichment}
+                  disabled={isEnriching || !appId.trim() || navGraphReady !== true}
+                  className="w-full bg-primary text-primary-foreground hover:bg-secondary"
+                >
+                  {isEnriching ? 'Enriching…' : 'Run enrichment'}
+                </Button>
+                {enrichStatus && (
+                  <div className={`p-4 border rounded ${getNoticeClasses(enrichStatus)}`}>{enrichStatus}</div>
+                )}
+                {enrichSummary?.errors?.length > 0 && (
+                  <div className="p-4 border rounded bg-muted/50 text-sm max-h-48 overflow-auto">
+                    <p className="font-medium mb-2">Errors (first rows)</p>
+                    <ul className="list-disc pl-5 space-y-1">
+                      {enrichSummary.errors.slice(0, 8).map((e: any, i: number) => (
+                        <li key={i}>
+                          {e.test_case_id}: {e.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <h4 className="font-semibold">Results</h4>
+                  {enrichedItems.length === 0 && (
+                    <p className="text-sm text-muted-foreground">No enriched rows yet. Run enrichment after step 5.</p>
+                  )}
+                  {enrichedItems.map((item) => (
+                    <Card key={item.id} className="border-border">
+                      <CardHeader className="py-3 px-4">
+                        <CardTitle className="text-sm font-medium">
+                          GWT: {item.given?.slice(0, 80)}
+                          {item.given?.length > 80 ? '…' : ''}
+                        </CardTitle>
+                        <p className="text-xs text-muted-foreground">
+                          When: {item.when?.slice(0, 120)}
+                          {item.when?.length > 120 ? '…' : ''}
+                        </p>
+                        {item.user_edited && (
+                          <span className="text-xs text-primary">Edited manually</span>
+                        )}
+                      </CardHeader>
+                      <CardContent className="px-4 pb-4 space-y-3">
+                        {editingEnrichedId === item.id ? (
+                          <>
+                            <div className="space-y-1">
+                              <Label className="text-xs">test_inputs_by_screen (JSON object)</Label>
+                              <Textarea
+                                value={editTestInputsJson}
+                                onChange={(e) => setEditTestInputsJson(e.target.value)}
+                                className="font-mono text-xs min-h-[120px] bg-input"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">expanded_test_cases (JSON array)</Label>
+                              <Textarea
+                                value={editExpandedJson}
+                                onChange={(e) => setEditExpandedJson(e.target.value)}
+                                className="font-mono text-xs min-h-[160px] bg-input"
+                              />
+                            </div>
+                            {saveEnrichedStatus && (
+                              <p className="text-sm text-muted-foreground">{saveEnrichedStatus}</p>
+                            )}
+                            <div className="flex gap-2">
+                              <Button size="sm" onClick={saveEditEnriched}>
+                                Save changes
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={cancelEditEnriched}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <pre className="text-xs bg-muted/50 p-3 rounded overflow-auto max-h-40 whitespace-pre-wrap">
+                              {JSON.stringify(item.test_inputs_by_screen || {}, null, 2)}
+                            </pre>
+                            <pre className="text-xs bg-muted/50 p-3 rounded overflow-auto max-h-48 whitespace-pre-wrap">
+                              {JSON.stringify(item.expanded_test_cases || [], null, 2)}
+                            </pre>
+                            <Button size="sm" variant="outline" onClick={() => startEditEnriched(item)}>
+                              Edit JSON
+                            </Button>
+                          </>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
               </CardContent>
             </Card>
           )}
