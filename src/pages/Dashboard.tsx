@@ -116,6 +116,8 @@ const Dashboard = () => {
   const [enrichStatus, setEnrichStatus] = useState('');
   const [enrichSummary, setEnrichSummary] = useState<any>(null);
   const [enrichLimit, setEnrichLimit] = useState<number | ''>('');
+  const [isImportingGraph, setIsImportingGraph] = useState(false);
+  const [importGraphStatus, setImportGraphStatus] = useState('');
   const [editingEnrichedId, setEditingEnrichedId] = useState<string | null>(null);
   const [editTestInputsJson, setEditTestInputsJson] = useState('');
   const [editExpandedJson, setEditExpandedJson] = useState('');
@@ -950,6 +952,27 @@ const Dashboard = () => {
       setEnrichStatus(err instanceof Error ? err.message : 'Network error');
     } finally {
       setIsEnriching(false);
+    }
+  };
+
+  const handleImportGraphFromGraph2 = async () => {
+    setIsImportingGraph(true);
+    setImportGraphStatus('');
+    try {
+      const res = await fetch(`${API_BASE}/api/enriched-tests/import-graph-from-graph2`, {
+        method: 'POST',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setImportGraphStatus(data.error || res.statusText || 'Import failed');
+        return;
+      }
+      setImportGraphStatus(data.message || 'Imported.');
+      await fetchNavigationGraphMeta();
+    } catch (err) {
+      setImportGraphStatus(err instanceof Error ? err.message : 'Network error');
+    } finally {
+      setIsImportingGraph(false);
     }
   };
 
@@ -2742,18 +2765,32 @@ const Dashboard = () => {
                   />
                 </div>
                 <div className="p-4 border rounded-lg text-sm space-y-2">
-                  <div>
-                    <span className="font-medium">Navigation graph file: </span>
-                    {navGraphReady === null && <span className="text-muted-foreground">Checking…</span>}
-                    {navGraphReady === true && (
-                      <span className="text-primary">Found (crawler export ready)</span>
-                    )}
-                    {navGraphReady === false && (
-                      <span className="text-destructive">
-                        Missing — run the crawler in step 4 for this app first.
-                      </span>
-                    )}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-medium">Navigation graph file: </span>
+                      {navGraphReady === null && <span className="text-muted-foreground">Checking…</span>}
+                      {navGraphReady === true && (
+                        <span className="text-primary">Found (crawler export ready)</span>
+                      )}
+                      {navGraphReady === false && (
+                        <span className="text-destructive">
+                          Missing — run the crawler in step 4 for this app first.
+                        </span>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleImportGraphFromGraph2}
+                      disabled={isImportingGraph || isEnriching}
+                    >
+                      {isImportingGraph ? 'Importing…' : 'Import'}
+                    </Button>
                   </div>
+                  {importGraphStatus && (
+                    <p className="text-xs text-muted-foreground">{importGraphStatus}</p>
+                  )}
                   <div>
                     <span className="font-medium">Enriched rows saved: </span>
                     {enrichedItems.length}
